@@ -170,7 +170,11 @@ Write-Host "== stdin plumbing =="
 # regression here can never be silent again.
 Reset-Log
 $plumbing = Invoke-Guard 'npm install plumbing-probe' 'safe'
-Check 'the entrypoint forwards the payload to the hook script' $plumbing 'ossprey npm install plumbing-probe'
+# Assert the probe package, not the whole rewritten command: this section runs
+# before the PATH stub below exists, so the rewrite still uses the OSSPREY_BIN
+# fallback form here. What matters is that the payload's command reached the
+# parser at all -- the probe name can only appear if it did.
+Check 'the entrypoint forwards the payload to the hook script' $plumbing 'npm install plumbing-probe'
 Check 'a delivered payload produces a verdict, not silence' $plumbing 'additionalContext'
 
 Write-Host "== PreToolUse (guard): routing through the forwarder =="
