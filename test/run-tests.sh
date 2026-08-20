@@ -65,7 +65,7 @@ check_absent() { # check_absent <name> <haystack> <needle>
   esac
 }
 
-echo "== PreToolUse (guard) =="
+echo "== PreToolUse (guard): named packages =="
 
 reset
 OUT=$(run_guard malware "npm install evil-pkg@1.0.0")
@@ -76,16 +76,15 @@ check "mock got the right check argv" "$(cat "$MOCK_LOG")" "check -e npm evil-pk
 
 reset
 OUT=$(run_guard safe "npm install lodash react@18.2.0")
-check "clean npm install reports the check" "$OUT" "checked 2 package(s)"
+check "clean npm install reports the check" "$OUT" "checked 2 npm package(s)"
 check "both packages were checked" "$(cat "$MOCK_LOG")" "check -e npm lodash react@18.2.0"
 # A clean verdict must NOT auto-approve the command: an explicit allow would
 # bypass the user's own permission rules for that Bash call.
 check_absent "clean verdict does not auto-approve" "$OUT" "permissionDecision"
 
 reset
-OUT=$(run_guard safe "pip install requests==2.31.0 -r reqs.txt")
-check "pip install checked as pypi" "$(cat "$MOCK_LOG")" "check -e pypi requests==2.31.0"
-check_absent "-r value not treated as a package" "$(cat "$MOCK_LOG")" "reqs.txt"
+OUT=$(run_guard safe "pip install requests==2.31.0 flask")
+check "pip install checked as pypi" "$(cat "$MOCK_LOG")" "check -e pypi requests==2.31.0 flask"
 
 reset
 OUT=$(run_guard safe "cd /tmp/proj && yarn add left-pad")
@@ -96,24 +95,146 @@ OUT=$(run_guard safe "uv pip install flask>=2.0")
 check "uv pip install checked, range stripped" "$(cat "$MOCK_LOG")" "check -e pypi flask"
 
 reset
+OUT=$(run_guard safe "npm install @ossprey/test-package")
+check "scoped package name kept intact" "$(cat "$MOCK_LOG")" "check -e npm @ossprey/test-package"
+
+# Every install verb the CLI forwarder recognises, per manager. Missing one
+# means that install form reaches the machine unchecked.
+for CASE in \
+  "npm:i:npm install-alias" \
+  "npm:add:npm add" \
+  "npm:update:npm update" \
+  "npm:up:npm up" \
+  "pnpm:add:pnpm add" \
+  "pnpm:update:pnpm update" \
+  "yarn:add:yarn add" \
+  "yarn:upgrade:yarn upgrade" \
+  "yarn:up:yarn up" \
+  "poetry:add:poetry add" \
+  "poetry:update:poetry update" \
+  "uv:add:uv add" \
+  "bun:add:bun add"
+do
+  MGR=${CASE%%:*}; REST=${CASE#*:}; VERB=${REST%%:*}; NAME=${REST#*:}
+  reset
+  run_guard safe "$MGR $VERB somepkg" >/dev/null
+  check "$NAME checks the named package" "$(cat "$MOCK_LOG")" "somepkg"
+done
+
+echo "== PreToolUse (guard): flags before and after the verb =="
+
+# Global flags precede the verb for most managers, and pnpm workspaces do it as
+# a matter of course. Reading only the first token classified these as
+# "not an install" and let them through unchecked.
+reset
+OUT=$(run_guard safe "pnpm --filter web add left-pad")
+check "global flag before the verb still an install" "$(cat "$MOCK_LOG")" "check -e npm left-pad"
+
+reset
+OUT=$(run_guard safe "npm --prefix /tmp install left-pad")
+check "npm --prefix value not read as the verb" "$(cat "$MOCK_LOG")" "check -e npm left-pad"
+
+reset
+OUT=$(run_guard safe "yarn --cwd /tmp add left-pad")
+check "yarn --cwd value not read as the verb" "$(cat "$MOCK_LOG")" "check -e npm left-pad"
+
+# pnpm's -w is boolean (--workspace-root) where npm's -w takes a value. Sharing
+# one flag table between them is what hid `pnpm add -w <pkg>` in the CLI.
+reset
+OUT=$(run_guard safe "pnpm add -w left-pad")
+check "pnpm -w is boolean: the package is still checked" "$(cat "$MOCK_LOG")" "check -e npm left-pad"
+
+reset
+OUT=$(run_guard safe "npm install -w web left-pad")
+check "npm -w takes a value: only the package is checked" "$(cat "$MOCK_LOG")" "check -e npm left-pad"
+check_absent "npm -w value not treated as a package" "$(cat "$MOCK_LOG")" "web"
+
+reset
+OUT=$(run_guard safe "pip install --index-url=https://example.com/simple flask")
+check "inline --flag=value handled" "$(cat "$MOCK_LOG")" "check -e pypi flask"
+
+reset
+OUT=$(run_guard safe "npm install lodash --save-dev")
+check "boolean flag does not swallow the package" "$(cat "$MOCK_LOG")" "check -e npm lodash"
+
+reset
+OUT=$(run_guard safe "poetry add -G dev requests")
+check "poetry -G value not treated as a package" "$(cat "$MOCK_LOG")" "check -e pypi requests"
+
+echo "== PreToolUse (guard): manifest installs scan the project =="
+
+# An install that names no packages takes them from the manifest/lockfile, so
+# there is nothing on the command line to check. The CLI forwarder scans the
+# project instead of forwarding unchecked (OSS-1284); so does the hook.
+for CMD in "npm install" "npm ci" "pnpm install" "yarn install" \
+           "poetry install" "poetry lock" "uv sync" "pip install -r reqs.txt"
+do
+  reset
+  OUT=$(run_guard safe "$CMD")
+  check "\`$CMD\` scans the project" "$(cat "$MOCK_LOG")" "scan /tmp/proj"
+  check "\`$CMD\` reports the scan" "$OUT" "checked the project"
+done
+
+reset
+OUT=$(run_guard malware "npm ci")
+check "malware in the manifest denies the install" "$OUT" '"permissionDecision": "deny"'
+check "manifest deny explains where it looked" "$OUT" "takes its packages from the project manifest"
+check "manifest deny carries the finding" "$OUT" "contains malware"
+
+reset
+OUT=$(run_guard safe "cd sub/proj && npm ci")
+check "a leading cd moves the scanned directory" "$(cat "$MOCK_LOG")" "scan /tmp/proj/sub/proj"
+
+reset
+OUT=$(run_guard safe "npm ci && pip install -r r.txt")
+check "one scan per directory, not per command" \
+  "$(grep -c 'scan /tmp/proj' "$MOCK_LOG")" "1"
+
+reset
+OUT=$(run_guard safe "npm install lodash && npm ci")
+check "named packages are checked" "$(cat "$MOCK_LOG")" "check -e npm lodash"
+check "and the manifest install is scanned" "$(cat "$MOCK_LOG")" "scan /tmp/proj"
+
+reset
+OUT=$(run_guard error "npm ci")
+check_absent "a failed scan fails open" "$OUT" "deny"
+check "a failed scan is flagged" "$OUT" "could not scan"
+
+echo "== PreToolUse (guard): nothing to check =="
+
+reset
 OUT=$(run_guard malware "ls -la && git status")
 check_absent "non-install command is not denied" "$OUT" "deny"
 check "non-install command exits 0" "$(run_guard_rc malware 'ls -la && git status')" "0"
 check "non-install command never calls ossprey" "$(cat "$MOCK_LOG")x" "x"
 
+# `pnpm run add` is a script run, not an install of a package called "add".
 reset
-OUT=$(run_guard malware "npm install")
-check_absent "bare manifest install is not denied (audit hook covers it)" "$OUT" "deny"
-check "bare install never calls ossprey" "$(cat "$MOCK_LOG")x" "x"
+OUT=$(run_guard malware "pnpm run add")
+check "a script run named like a verb is not an install" "$(cat "$MOCK_LOG")x" "x"
+
+reset
+OUT=$(run_guard malware "npm run build && pip list")
+check "other manager subcommands are not installs" "$(cat "$MOCK_LOG")x" "x"
 
 reset
 OUT=$(run_guard malware "ossprey npm install evil-pkg")
 check_absent "forwarder-wrapped install passes through" "$OUT" "deny"
+check "forwarder-wrapped install is not double-checked" "$(cat "$MOCK_LOG")x" "x"
 
 reset
 OUT=$(run_guard safe "npm install ./local-pkg ../other git+https://github.com/x/y.git")
 check_absent "local/vcs-only install is not denied" "$OUT" "deny"
 check "local/vcs targets never checked" "$(cat "$MOCK_LOG")x" "x"
+check "unchecked targets are named to the agent" "$OUT" "non-registry install targets"
+
+reset
+OUT=$(run_guard safe "pip install requests -r extra.txt -t ./vendor flask ./local.whl")
+check "mixed install checks the registry packages" "$(cat "$MOCK_LOG")" "check -e pypi requests flask"
+check "mixed install names what it skipped" "$OUT" "./local.whl"
+check_absent "-t value not treated as a package" "$(cat "$MOCK_LOG")" "vendor"
+
+echo "== PreToolUse (guard): fail-open =="
 
 reset
 OUT=$(run_guard error "npm install some-pkg")
@@ -128,8 +249,18 @@ check "signed-out check steers the agent to ossprey login" "$OUT" "ossprey login
 check "signed-out guidance mentions whoami confirmation" "$OUT" "ossprey whoami"
 
 reset
+OUT=$(run_guard auth "npm ci")
+check_absent "signed-out scan fails open" "$OUT" "deny"
+check "signed-out scan steers the agent to ossprey login" "$OUT" "ossprey login"
+
+reset
 OUT=$( (OSSPREY_BIN="$WORK/does-not-exist"; export OSSPREY_BIN; run_guard safe "npm install some-pkg") )
 check "missing CLI fails open with a warning" "$OUT" "Ossprey CLI not found"
+
+reset
+OUT=$( (OSSPREY_BIN="$WORK/does-not-exist"; export OSSPREY_BIN; run_guard safe "npm ci") )
+check "missing CLI fails open on a manifest install too" "$OUT" "Ossprey CLI not found"
+
 
 echo "== PostToolUse (audit) + Stop (report) =="
 

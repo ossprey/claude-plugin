@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+- **The guard hook now covers every install path the Ossprey CLI's forwarder
+  handles.** It is a port of `internal/forward` in ossprey-cli — the code
+  behind `ossprey npm install …` — so a command is treated the same way
+  whether the agent wraps it or not. What this adds over 0.1.0:
+  - **Manifest installs are scanned instead of waved through.** A bare
+    `npm install`, `npm ci`, `yarn install`, `pnpm install`,
+    `poetry install`, `poetry lock`, `uv sync`, or `pip install -r req.txt`
+    names no packages, so there was nothing for `ossprey check` to look at
+    and the command went unchecked. The hook now runs a blocking
+    `ossprey scan` of the project it is installing into and denies on a
+    malware verdict (`OSSPREY_HOOK_SCAN_TIMEOUT`, default 180s, then fails
+    open). A leading `cd` is followed, so `cd api && npm ci` scans `api`.
+  - **Install verbs beyond the obvious ones**: `npm i/add/ci/update/up`,
+    `pnpm update/up`, `yarn install/upgrade/up`, `poetry install/update/lock`,
+    `uv sync`. Previously only `install`/`i`/`add` (and `poetry add`,
+    `uv add`) were recognised, so `npm ci` and `yarn upgrade` were invisible.
+  - **Global flags before the verb**: `npm --prefix /tmp install x`,
+    `pnpm --filter web add x`, `pip --quiet install x`. Reading only the first
+    token classified these as "not an install" — and pnpm workspaces write
+    them as a matter of course.
+  - **Per-manager flag tables, never shared.** `pnpm -w` is boolean
+    (`--workspace-root`) where `npm -w` takes a value; one shared table per
+    ecosystem is what hid `pnpm add -w <pkg>` in the CLI (OSS-1577). Also
+    handles `--flag=value` inline values and `--` ending option parsing.
+  - **Un-checkable targets are reported, not ignored.** An install of only
+    local paths, archives, URLs or VCS refs now tells the agent what went
+    unverified instead of exiting silently, matching the CLI's warning.
+  - Spec parsing follows the CLI's `ParseSpec` (last `@` for npm, so
+    `@scope/name@1.2.3` splits correctly). One deliberate difference: a range
+    or tag (`foo@^1.2.3`, `foo@latest`) reduces to a bare name so
+    `ossprey check` resolves and checks the latest published version, rather
+    than submitting a range as if it were a version.
+- **Docs point at `ossprey shim install`** for the installs the hook cannot
+  see — Makefiles, CI steps, another terminal. The two overlap harmlessly: a
+  shimmed install looks `ossprey`-wrapped to the hook, so it is not
+  double-checked.
+- Test suites grew to cover each manager's verbs, the flag-parsing cases, the
+  manifest-scan path, and the deny wording for both (139 assertions POSIX).
+
 ## 0.1.0
 
 Initial release: the Claude Code counterpart of the

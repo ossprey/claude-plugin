@@ -15,6 +15,11 @@ for known malware before they are installed.
   the user how to proceed.
 - After changing dependency manifests or lockfiles, run `ossprey scan .` to
   verify the full dependency tree, and fix anything it reports.
+- A manifest install (`npm install`, `npm ci`, `yarn install`,
+  `poetry install`, `uv sync`, `pip install -r ...`) names no packages, so it
+  is verified by scanning the project first. Expect it to take a few seconds
+  longer than the install alone, and read the verdict before assuming the
+  tree is clean.
 - Scans need credentials: either a stored `ossprey login` session or
   `OSSPREY_API_KEY` in the environment. If a check or scan fails with a
   "no credentials" error, do not silently skip scanning and do not tell the

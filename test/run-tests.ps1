@@ -173,7 +173,7 @@ $plumbing = Invoke-Guard 'npm install plumbing-probe' 'safe'
 Check 'the entrypoint forwards the payload to the hook script' (Get-Log) 'plumbing-probe'
 Check 'a delivered payload produces a verdict, not silence' $plumbing 'additionalContext'
 
-Write-Host "== PreToolUse (guard) =="
+Write-Host "== PreToolUse (guard): named packages =="
 
 Reset-Log
 $out = Invoke-Guard 'npm install evil-pkg@1.0.0' 'malware'
@@ -184,16 +184,15 @@ Check 'mock got the right check argv' (Get-Log) 'check -e npm evil-pkg@1.0.0'
 
 Reset-Log
 $out = Invoke-Guard 'npm install lodash react@18.2.0' 'safe'
-Check 'clean npm install reports the check' $out 'checked 2 package(s)'
+Check 'clean npm install reports the check' $out 'checked 2 npm package(s)'
 Check 'both packages were checked' (Get-Log) 'check -e npm lodash react@18.2.0'
 # A clean verdict must NOT auto-approve the command: an explicit allow would
 # bypass the user's own permission rules for that Bash call.
 Check-Absent 'clean verdict does not auto-approve' $out 'permissionDecision'
 
 Reset-Log
-$out = Invoke-Guard 'pip install requests==2.31.0 -r reqs.txt' 'safe'
-Check 'pip install checked as pypi' (Get-Log) 'check -e pypi requests==2.31.0'
-Check-Absent '-r value not treated as a package' (Get-Log) 'reqs.txt'
+$out = Invoke-Guard 'pip install requests==2.31.0 flask' 'safe'
+Check 'pip install checked as pypi' (Get-Log) 'check -e pypi requests==2.31.0 flask'
 
 Reset-Log
 $out = Invoke-Guard 'cd /tmp/proj && yarn add left-pad' 'safe'
@@ -204,24 +203,119 @@ $out = Invoke-Guard 'uv pip install flask>=2.0' 'safe'
 Check 'uv pip install checked, range stripped' (Get-Log) 'check -e pypi flask'
 
 Reset-Log
+$out = Invoke-Guard 'npm install @ossprey/test-package' 'safe'
+Check 'scoped package name kept intact' (Get-Log) 'check -e npm @ossprey/test-package'
+
+# Every install verb the CLI forwarder recognises, per manager. Missing one
+# means that install form reaches the machine unchecked.
+foreach ($case in @(
+    @('npm', 'i'), @('npm', 'add'), @('npm', 'update'), @('npm', 'up'),
+    @('pnpm', 'add'), @('pnpm', 'update'),
+    @('yarn', 'add'), @('yarn', 'upgrade'), @('yarn', 'up'),
+    @('poetry', 'add'), @('poetry', 'update'),
+    @('uv', 'add'), @('bun', 'add'))) {
+    Reset-Log
+    $null = Invoke-Guard "$($case[0]) $($case[1]) somepkg" 'safe'
+    Check "$($case[0]) $($case[1]) checks the named package" (Get-Log) 'somepkg'
+}
+
+Write-Host "== PreToolUse (guard): flags before and after the verb =="
+
+# Global flags precede the verb for most managers, and pnpm workspaces do it as
+# a matter of course. Reading only the first token classified these as
+# "not an install" and let them through unchecked.
+Reset-Log
+$out = Invoke-Guard 'pnpm --filter web add left-pad' 'safe'
+Check 'global flag before the verb still an install' (Get-Log) 'check -e npm left-pad'
+
+Reset-Log
+$out = Invoke-Guard 'npm --prefix /tmp install left-pad' 'safe'
+Check 'npm --prefix value not read as the verb' (Get-Log) 'check -e npm left-pad'
+
+# pnpm's -w is boolean (--workspace-root) where npm's -w takes a value. Sharing
+# one flag table between them is what hid `pnpm add -w <pkg>` in the CLI.
+Reset-Log
+$out = Invoke-Guard 'pnpm add -w left-pad' 'safe'
+Check 'pnpm -w is boolean: the package is still checked' (Get-Log) 'check -e npm left-pad'
+
+Reset-Log
+$out = Invoke-Guard 'npm install -w web left-pad' 'safe'
+Check 'npm -w takes a value: only the package is checked' (Get-Log) 'check -e npm left-pad'
+Check-Absent 'npm -w value not treated as a package' (Get-Log) 'web'
+
+Reset-Log
+$out = Invoke-Guard 'pip install --index-url=https://example.com/simple flask' 'safe'
+Check 'inline --flag=value handled' (Get-Log) 'check -e pypi flask'
+
+Reset-Log
+$out = Invoke-Guard 'poetry add -G dev requests' 'safe'
+Check 'poetry -G value not treated as a package' (Get-Log) 'check -e pypi requests'
+
+Write-Host "== PreToolUse (guard): manifest installs scan the project =="
+
+# An install that names no packages takes them from the manifest/lockfile, so
+# there is nothing on the command line to check. The CLI forwarder scans the
+# project instead of forwarding unchecked (OSS-1284); so does the hook.
+foreach ($cmd in @('npm install', 'npm ci', 'pnpm install', 'yarn install',
+                   'poetry install', 'poetry lock', 'uv sync',
+                   'pip install -r reqs.txt')) {
+    Reset-Log
+    $out = Invoke-Guard $cmd 'safe'
+    Check "``$cmd`` scans the project" (Get-Log) 'scan'
+    Check "``$cmd`` reports the scan" $out 'checked the project'
+}
+
+Reset-Log
+$out = Invoke-Guard 'npm ci' 'malware'
+Check 'malware in the manifest denies the install' $out '"permissionDecision": "deny"'
+Check 'manifest deny explains where it looked' $out 'takes its packages from the project manifest'
+Check 'manifest deny carries the finding' $out 'contains malware'
+
+Reset-Log
+$out = Invoke-Guard 'npm install lodash && npm ci' 'safe'
+Check 'named packages are checked' (Get-Log) 'check -e npm lodash'
+Check 'and the manifest install is scanned' (Get-Log) 'scan'
+
+Reset-Log
+$out = Invoke-Guard 'npm ci' 'error'
+Check-Absent 'a failed scan fails open' $out 'deny'
+Check 'a failed scan is flagged' $out 'could not scan'
+
+Write-Host "== PreToolUse (guard): nothing to check =="
+
+Reset-Log
 $out = Invoke-Guard 'ls -la && git status' 'malware'
 Check-Absent 'non-install command is not denied' $out 'deny'
 Check 'non-install command exits 0' $out 'exit=0'
 Check-Absent 'non-install command never calls ossprey' (Get-Log) 'check'
 
+# `pnpm run add` is a script run, not an install of a package called "add".
 Reset-Log
-$out = Invoke-Guard 'npm install' 'malware'
-Check-Absent 'bare manifest install is not denied (audit hook covers it)' $out 'deny'
-Check-Absent 'bare install never calls ossprey' (Get-Log) 'check'
+$out = Invoke-Guard 'pnpm run add' 'malware'
+Check-Absent 'a script run named like a verb is not an install' (Get-Log) 'add'
+
+Reset-Log
+$out = Invoke-Guard 'npm run build && pip list' 'malware'
+Check-Absent 'other manager subcommands are not installs' (Get-Log) 'check'
 
 Reset-Log
 $out = Invoke-Guard 'ossprey npm install evil-pkg' 'malware'
 Check-Absent 'forwarder-wrapped install passes through' $out 'deny'
+Check-Absent 'forwarder-wrapped install is not double-checked' (Get-Log) 'check'
 
 Reset-Log
 $out = Invoke-Guard 'npm install ./local-pkg ../other git+https://github.com/x/y.git' 'safe'
 Check-Absent 'local/vcs-only install is not denied' $out 'deny'
 Check-Absent 'local/vcs targets never checked' (Get-Log) 'check'
+Check 'unchecked targets are named to the agent' $out 'non-registry install targets'
+
+Reset-Log
+$out = Invoke-Guard 'pip install requests -r extra.txt -t ./vendor flask ./local.whl' 'safe'
+Check 'mixed install checks the registry packages' (Get-Log) 'check -e pypi requests flask'
+Check 'mixed install names what it skipped' $out './local.whl'
+Check-Absent '-t value not treated as a package' (Get-Log) 'vendor'
+
+Write-Host "== PreToolUse (guard): fail-open =="
 
 Reset-Log
 $out = Invoke-Guard 'npm install some-pkg' 'error'
@@ -236,8 +330,16 @@ Check 'signed-out check steers the agent to ossprey login' $out 'ossprey login'
 Check 'signed-out guidance mentions whoami confirmation' $out 'ossprey whoami'
 
 Reset-Log
+$out = Invoke-Guard 'npm ci' 'auth'
+Check-Absent 'signed-out scan fails open' $out 'deny'
+Check 'signed-out scan steers the agent to ossprey login' $out 'ossprey login'
+
+Reset-Log
 $out = Invoke-Guard 'npm install some-pkg' 'safe' @{ OSSPREY_BIN = (Join-Path $Work 'does-not-exist') }
 Check 'missing CLI fails open with a warning' $out 'Ossprey CLI not found'
+
+$out = Invoke-Guard 'npm ci' 'safe' @{ OSSPREY_BIN = (Join-Path $Work 'does-not-exist') }
+Check 'missing CLI fails open on a manifest install too' $out 'Ossprey CLI not found'
 
 # The entrypoint must fail open when no Python 3 is on PATH, exactly like the
 # sh entrypoints do. Keep System32 on PATH so cmd.exe still resolves; the
@@ -247,6 +349,7 @@ $out = Invoke-Guard 'npm install x' 'safe' @{ PATH = $noPython }
 Check 'guard fails open without Python' $out 'NOT checked for malware'
 $out = Invoke-Hook -Event 'audit' -Payload '{}' -Env @{ PATH = $noPython }
 Check 'audit is silent without Python' $out 'exit=0'
+
 
 Write-Host "== PostToolUse (audit) + Stop (report) =="
 
