@@ -6,7 +6,8 @@ allowed-tools: Bash(ossprey scan:*), Bash(ossprey whoami:*), Bash(ossprey login:
 
 Scan the dependency tree for known supply-chain malware.
 
-Run `ossprey scan ${1:-.}` and report the verdict.
+Run `ossprey scan $1` and report the verdict — scan `.` if no path was
+given.
 
 - "No malware found" — say so and stop.
 - A `contains malware` line — name the offending package and version, remove
