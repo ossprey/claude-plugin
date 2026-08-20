@@ -3,14 +3,14 @@
 
 One script backs all four hook events (see hooks.json):
 
-  guard    PreToolUse (Bash)     Recognise every install command the Ossprey
-                                 CLI's forwarder handles. Packages named on the
-                                 command line are checked with `ossprey check`;
-                                 a manifest install that names none (`npm
-                                 install`, `npm ci`, `yarn install`, `poetry
-                                 install`, `uv sync`, `pip install -r ...`) is
-                                 scanned with `ossprey scan` first. Deny on a
-                                 malware verdict.
+  guard    PreToolUse (Bash)     Rewrite a package-manager command to run
+                                 through `ossprey <bin>`, so the CLI checks the
+                                 packages named on it -- or scans the project
+                                 manifest, for an install that names none --
+                                 inside the forwarder, before it execs the real
+                                 manager. The verdict and the blocking are the
+                                 CLI's; invocations that cannot be routed are
+                                 reported to the agent as unverified.
   audit    PostToolUse (edits)   When a dependency manifest is edited, kick off
                                  a background `ossprey scan` of that directory
                                  and record findings in a per-session state

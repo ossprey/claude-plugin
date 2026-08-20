@@ -21,9 +21,10 @@ fail-open design, wired to Claude Code's hook events and plugin format.
 | Commands | `/ossprey:scan`, `/ossprey:check`, `/ossprey:login` — the CLI's three everyday operations as slash commands. |
 
 Everything goes through the [Ossprey CLI](https://github.com/ossprey/ossprey-cli)
-— the hooks shell out to `ossprey check` and `ossprey scan`, and the CLI
-handles authentication and talking to the Ossprey API. The plugin registers
-no MCP server.
+— the guard routes the agent's package-manager commands through
+`ossprey <bin>`, the audit hook shells out to `ossprey scan`, and the CLI
+handles authentication, verdicts, and talking to the Ossprey API. The plugin
+registers no MCP server.
 
 ### How the check happens
 
@@ -114,7 +115,7 @@ confirm with `ossprey whoami` and re-run whatever went unchecked.
 |------------|-----------|-----------------|
 | **Claude Code**, recent enough for plugins and `${CLAUDE_PLUGIN_ROOT}` in hook commands | Loading the plugin at all | The plugin never runs |
 | **Python 3** (3.8+), on `PATH` as `python3` / `python`, or the `py` launcher on Windows | The hook logic (`hooks/ossprey_hook.py`) — the `.sh` / `.cmd` entrypoints are thin wrappers around it | Hooks **fail open**: installs proceed, nothing is checked, and the agent is warned |
-| **[Ossprey CLI](https://github.com/ossprey/ossprey-cli)** on `PATH` as `ossprey` | Every verdict — the hooks shell out to `ossprey check` and `ossprey scan` | Hooks **fail open** with a warning telling the agent the install was not checked |
+| **[Ossprey CLI](https://github.com/ossprey/ossprey-cli)** on `PATH` as `ossprey` | Every verdict — the guard routes commands through `ossprey <bin>`, and the audit hook runs `ossprey scan` | Hooks **fail open** with a warning telling the agent the install was not checked |
 | **Ossprey credentials** — an `ossprey login` session or `OSSPREY_API_KEY` ([free account](https://ossprey.com)) | Talking to the Ossprey API | Hooks **fail open** and steer the agent to run `ossprey login` for you |
 | **`git`** | Installing from the marketplace (Claude Code clones this repo) | Install from a local checkout instead |
 | **POSIX `sh`**, or **Git Bash** on Windows | Running the hook entrypoints | Windows without Git Bash: apply the batch wiring (see [Platform support](#platform-support)) |
