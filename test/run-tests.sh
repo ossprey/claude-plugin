@@ -130,6 +130,24 @@ reset
 OUT=$(run_guard safe "npm install 'c d' --foo=bar")
 check "quoting is preserved byte for byte" "$OUT" "$OSSP npm install 'c d' --foo=bar"
 
+# Separators without surrounding spaces, and newlines, must still start a new
+# command. A shlex-based parser missed both: it drops newlines and leaves `;`
+# stuck to its neighbour, so the second install went unrouted.
+reset
+OUT=$(run_guard safe "npm i a;npm i b")
+check "an unspaced semicolon starts a new command" "$OUT" "$OSSP npm i a;$OSSP npm i b"
+
+reset
+OUT=$(run_guard safe "npm i a&&npm i b")
+check "an unspaced && starts a new command" "$OUT" "$OSSP npm i a&&$OSSP npm i b"
+
+reset
+# json_str escapes the newline properly; a raw one inside a JSON string would
+# make the payload unparseable, which the hook treats as "no command".
+NL_CMD="$(printf 'cd api\nnpm install evil')"
+OUT=$(run_guard safe "$NL_CMD")
+check "an install on the next line is routed" "$OUT" "$OSSP npm install evil"
+
 # updatedInput replaces the entire input object, so dropping a field would
 # silently change how the command runs.
 reset

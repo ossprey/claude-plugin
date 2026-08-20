@@ -20,8 +20,8 @@
   Consequences worth knowing:
   - **Every invocation of a routed manager is rewritten, not just installs.**
     `npm run build` runs as `ossprey npm run build`; the forwarder execs
-    non-install commands straight through, which is also how the CLI's own
-    PATH shims behave. Cost is one extra process.
+    non-install commands straight through. That is what removes the need for
+    a list of install verbs. Cost is one extra process.
   - **Permission rules see the rewritten command.** A rule for
     `Bash(npm install:*)` no longer matches — allowlist `Bash(ossprey:*)`.
   - **The verdict arrives as a failed command**, not as a hook denial: the
@@ -44,6 +44,12 @@
     `OSSPREY_HOOK_CHECK_ARGS` are gone: the guard runs nothing, so it has
     nothing to time out or pass flags to. `OSSPREY_HOOK_SCAN_ARGS` still
     applies to the audit hook's background scan.
+- **The plugin's scope is the agent's own commands only.** An earlier draft
+  pointed users at the CLI's PATH shims (`ossprey shim install`) to cover
+  Makefiles, CI steps and their own terminal; that is out of scope for a
+  Claude Code plugin, which should not reconfigure the whole environment to
+  do its job. `ossprey scan .` remains the way to verify a project after an
+  install the plugin never saw.
 - **The session guidance stopped telling the agent to type `ossprey`.**
   Installs are routed for it now, and typing the wrapper by hand fails on
   setups where the CLI is not on `PATH` but `OSSPREY_BIN` is set.

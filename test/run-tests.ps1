@@ -170,7 +170,7 @@ Write-Host "== stdin plumbing =="
 # regression here can never be silent again.
 Reset-Log
 $plumbing = Invoke-Guard 'npm install plumbing-probe' 'safe'
-Check 'the entrypoint forwards the payload to the hook script' (Get-Log) 'plumbing-probe'
+Check 'the entrypoint forwards the payload to the hook script' $plumbing 'ossprey npm install plumbing-probe'
 Check 'a delivered payload produces a verdict, not silence' $plumbing 'additionalContext'
 
 Write-Host "== PreToolUse (guard): routing through the forwarder =="
@@ -186,6 +186,7 @@ Write-Host "== PreToolUse (guard): routing through the forwarder =="
 $stubDir = Join-Path $Work 'stub'
 New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
 [IO.File]::WriteAllText((Join-Path $stubDir 'ossprey.cmd'), "@echo off`r`nexit /b 0`r`n")
+$pathWithoutStub = $env:PATH
 $env:PATH = "$stubDir$([IO.Path]::PathSeparator)$env:PATH"
 
 Reset-Log
@@ -284,7 +285,7 @@ Write-Host "== PreToolUse (guard): fail-open =="
 Reset-Log
 $out = Invoke-Guard 'npm install some-pkg' 'safe' @{
     OSSPREY_BIN = (Join-Path $Work 'does-not-exist')
-    PATH = (Join-Path $env:SystemRoot 'System32')
+    PATH = $pathWithoutStub   # drops the stub, keeps Python
 }
 Check 'missing CLI fails open with a warning' $out 'Ossprey CLI not found'
 Check-Absent 'missing CLI does not rewrite the command' $out 'updatedInput'

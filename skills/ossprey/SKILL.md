@@ -63,17 +63,6 @@ If packages are named, each is checked; a bare manifest install (`npm ci`,
 `yarn install`, `poetry install`, `uv sync`, `pip install -r req.txt`) scans
 the project first. On a malware verdict the real package manager never runs.
 
-To cover installs that don't go through the wrapper at all -- Makefiles, CI
-steps, another terminal -- install the CLI's PATH shims once:
-
-```sh
-ossprey shim install          # ossprey shim status / uninstall
-```
-
-They put `ossprey` ahead of npm/pnpm/yarn/pip/pip3/poetry/uv on PATH, so a
-plain `npm install` is checked too. Inside Claude Code the plugin's hook
-already does this for the agent's own commands.
-
 ## Scan a whole project
 
 ```sh

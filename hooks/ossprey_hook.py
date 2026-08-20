@@ -287,10 +287,10 @@ def forwarder_command(binary):
     """How a rewritten command should call the CLI.
 
     Prefer the bare name: it keeps the command readable, and it resolves on
-    the agent shell's own PATH — which is where the CLI's installer puts it,
-    and where a `ossprey shim install` shim lives. The hook cannot see that
-    shell's PATH, so fall back to the absolute path when `ossprey` does not
-    resolve here, which is what routes an OSSPREY_BIN-only install."""
+    the agent shell's own PATH, which is where the CLI's installer puts it.
+    The hook cannot see that shell's PATH, so fall back to the absolute path
+    when `ossprey` does not resolve here — that is what routes an
+    OSSPREY_BIN-only install."""
     if shutil.which("ossprey"):
         return "ossprey"
     return shlex.quote(binary)

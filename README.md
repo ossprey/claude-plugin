@@ -52,10 +52,10 @@ detection. There is nothing to keep in step and nothing that can drift.
 
 `npm`, `pnpm`, `yarn`, `pip`, `pip3`, `poetry` and `uv` are routed — exactly
 the managers `ossprey <bin>` exists for (`forward.Managers()` in the CLI).
-Every invocation of one is routed, not just installs: the forwarder execs
-non-install commands straight through, which is also how the CLI's own PATH
-shims work. So `npm run build` runs as `ossprey npm run build` and behaves
-identically, at the cost of one extra process.
+Every invocation of one is routed, not just installs, so there is no list of
+install verbs to keep in step with the CLI: the forwarder execs a non-install
+command straight through. `npm run build` runs as `ossprey npm run build` and
+behaves identically, at the cost of one extra process.
 
 Three things can't be routed, and are reported to the agent as unverified
 rather than passed off as covered:
@@ -70,11 +70,10 @@ A command already wrapped in `ossprey …` is left alone — it self-checks.
 So is anything that isn't a package manager, and a manager name that isn't a
 command head (`echo npm install`, `git commit -m "npm install"`).
 
-For coverage outside the agent's Bash tool — Makefiles, CI steps, your own
-terminal — the CLI ships PATH shims (`ossprey shim install`) that put
-`ossprey` in front of the real managers. The two overlap harmlessly: a
-shimmed `npm` is already an `ossprey` install as far as the hook is
-concerned.
+The plugin's scope is the agent's own commands, deliberately: it covers what
+Claude Code runs through its Bash tool and changes nothing about the rest of
+your environment. Installs from a Makefile, a CI step, or your own terminal
+are outside it — `ossprey scan .` is the way to verify a project after one.
 
 #### One thing to know about permission rules
 
