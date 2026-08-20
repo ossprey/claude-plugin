@@ -1,0 +1,16 @@
+# Keep POSIX shell scripts LF even when checked out on Windows (Git for
+# Windows defaults to autocrlf=true): a CRLF shebang line breaks them under
+# WSL and Git Bash, which is the shell Claude Code runs hooks through there.
+*.sh          text eol=lf
+*.py          text eol=lf
+test/mock/ossprey text eol=lf
+
+# Batch files need CRLF: cmd.exe mis-parses labels and `goto` in LF-only
+# files, which would silently break the hook shim and the mock CLI.
+*.cmd         text eol=crlf
+*.bat         text eol=crlf
+
+# PowerShell reads either; normalise to LF in the repo, native in the tree.
+*.ps1         text
+*.json        text
+*.md          text

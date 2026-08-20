@@ -1,0 +1,77 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege for GITHUB_TOKEN: the jobs only read the repository.
+permissions:
+  contents: read
+
+jobs:
+  hooks-matrix:
+    name: hooks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # The suites take seconds on Linux and a few minutes on Windows (every
+    # hook invocation spawns a fresh shell). Cap it so a hung child process
+    # fails fast instead of holding a runner for hours.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The hooks shell out to Python 3; pin it so both runners agree.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate JSON files
+        shell: bash
+        run: |
+          python -m json.tool .claude-plugin/plugin.json > /dev/null
+          python -m json.tool .claude-plugin/marketplace.json > /dev/null
+          python -m json.tool hooks/hooks.json > /dev/null
+          python -m json.tool hooks/hooks.posix.json > /dev/null
+          python -m json.tool hooks/hooks.windows.json > /dev/null
+
+      # POSIX suite: sh entrypoints, install.sh, and (since pwsh ships on the
+      # runner) the PowerShell entrypoint and install.ps1 as well.
+      - name: Run hook test suite (POSIX)
+        if: runner.os != 'Windows'
+        run: sh test/run-tests.sh
+
+      # Windows suite: the same hook behaviour driven through the batch
+      # entrypoint and the .cmd mock CLI, which is the only combination the
+      # POSIX suite cannot cover.
+      - name: Run hook test suite (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh -NoProfile -File test/run-tests.ps1
+
+      # The suites rewrite hooks/hooks.json in place while exercising the
+      # installers, and both are supposed to put it back.
+      - name: Working tree is clean after the suite
+        shell: bash
+        run: git diff --exit-code
+
+  # Aggregate gate for branch protection: keeps a single "hooks" check that is
+  # green only when every matrix leg passed. `if: always()` is required — a
+  # skipped job would otherwise satisfy the required check when the matrix fails.
+  hooks:
+    name: hooks
+    needs: hooks-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    # Reads nothing; it only inspects the matrix result.
+    permissions: {}
+    steps:
+      - name: Require all matrix jobs to pass
+        env:
+          RESULT: ${{ needs.hooks-matrix.result }}
+        run: |
+          echo "matrix result: $RESULT"
+          [ "$RESULT" = "success" ]

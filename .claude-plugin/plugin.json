@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "ossprey",
+  "displayName": "Ossprey",
+  "version": "0.1.0",
+  "description": "Supply-chain malware protection for Claude Code. Blocks agent installs of known-malicious npm/PyPI packages via the Ossprey CLI and audits dependency manifests after edits.",
+  "author": {
+    "name": "Ossprey",
+    "email": "support@ossprey.com",
+    "url": "https://ossprey.com"
+  },
+  "homepage": "https://ossprey.com",
+  "repository": "https://github.com/ossprey/claude-plugin",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "malware",
+    "supply-chain",
+    "npm",
+    "pypi",
+    "dependencies",
+    "sbom",
+    "scanning"
+  ]
+}

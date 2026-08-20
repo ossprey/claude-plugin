@@ -1,0 +1,32 @@
+#!/bin/sh
+# Mock Ossprey CLI for hook tests. Mirrors the real CLI's contract:
+#   exit 0 + "No malware found"                          on a clean verdict
+#   exit 1 + "... contains malware. Remediate ..."       on a malware verdict
+#   exit 1 + error text on stderr                        on API/auth errors
+#   exit 1 + "no credentials: ..." on stderr             when signed out
+# Behaviour is selected with MOCK_MODE=safe|malware|error|auth (default safe).
+# Every invocation's argv is appended to MOCK_LOG when set.
+
+if [ -n "$MOCK_LOG" ]; then
+  printf '%s\n' "$*" >> "$MOCK_LOG"
+  printf 'key=%s\n' "${OSSPREY_API_KEY:-}" >> "$MOCK_LOG"
+fi
+
+case "${MOCK_MODE:-safe}" in
+  malware)
+    echo "Error: WARNING: evil-pkg:1.0.0 contains malware. Remediate this immediately"
+    exit 1
+    ;;
+  error)
+    echo "Error: Post \"https://api.ossprey.com/public/v1/scans\": dial tcp: no route to host" >&2
+    exit 1
+    ;;
+  auth)
+    echo "Error: no credentials: run \`ossprey login\`, or set OSSPREY_API_KEY / --api-key" >&2
+    exit 1
+    ;;
+  *)
+    echo "No malware found"
+    exit 0
+    ;;
+esac

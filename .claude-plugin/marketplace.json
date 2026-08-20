@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-marketplace.json",
+  "name": "ossprey",
+  "description": "Ossprey supply-chain security plugins for Claude Code",
+  "owner": {
+    "name": "Ossprey",
+    "email": "support@ossprey.com",
+    "url": "https://ossprey.com"
+  },
+  "plugins": [
+    {
+      "name": "ossprey",
+      "source": "./",
+      "description": "Supply-chain malware protection: blocks installs of known-malicious npm/PyPI packages and audits dependency manifests after edits.",
+      "category": "security",
+      "tags": [
+        "security",
+        "supply-chain",
+        "dependency-scanning"
+      ]
+    }
+  ]
+}
