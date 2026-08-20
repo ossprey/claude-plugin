@@ -13,7 +13,7 @@ fail-open design, wired to Claude Code's hook events and plugin format.
 
 | Component | Behaviour |
 |-----------|-----------|
-| `PreToolUse` hook (Bash) | Recognises every install command the Ossprey CLI's forwarder handles (see [Install coverage](#install-coverage)) and **denies** it on a malware verdict. Packages named on the command line are checked with `ossprey check`; an install that names none takes its packages from the manifest, so the project is scanned with `ossprey scan` first. |
+| `PreToolUse` hook (Bash) | Rewrites package-manager commands to run through the Ossprey CLI's forwarder — `npm install left-pad` becomes `ossprey npm install left-pad` — which checks the packages, or scans the project manifest for an install that names none, and refuses to run the real manager on a malware verdict. See [How the check happens](#how-the-check-happens). |
 | `PostToolUse` hook (edits) | When the agent edits a dependency manifest or lockfile (`package.json`, `requirements.txt`, `pyproject.toml`, `poetry.lock`, `uv.lock`, …) it kicks off a background `ossprey scan` of that directory. |
 | `Stop` hook | If a background scan found malware, the stop is blocked and the agent is told to remediate before the session ends. |
 | `SessionStart` hook | Injects `rules/ossprey.md` as session context: prefer `ossprey <manager> install …` wrapped installs, run `ossprey scan .` after dependency changes, never bypass a malware block. |
@@ -25,73 +25,83 @@ Everything goes through the [Ossprey CLI](https://github.com/ossprey/ossprey-cli
 handles authentication and talking to the Ossprey API. The plugin registers
 no MCP server.
 
-### Install coverage
+### How the check happens
 
-The guard hook mirrors [`internal/forward`](https://github.com/ossprey/ossprey-cli/tree/main/internal/forward)
-in the CLI — the code behind `ossprey npm install …`. That is the reference for
-what counts as an install and what gets checked, so the same command is treated
-the same way whether the agent wraps it or not. The manager registry, install
-verbs, per-manager flag tables and target classification in
-`hooks/ossprey_hook.py` are a port of it; **keep them in step with the CLI**.
+The hook does not decide whether a package is malicious. `ossprey npm install
+left-pad` already checks the named packages — and, for an install that names
+none, scans the project manifest — inside the CLI, before it execs the real
+npm. So the hook's whole job is to make the agent's command go through that
+path:
 
-| Manager | Install verbs |
-|---------|---------------|
-| `npm` | `install`, `i`, `add`, `ci`, `update`, `up` |
-| `pnpm` | `install`, `i`, `add`, `update`, `up` |
-| `yarn` | `add`, `install`, `upgrade`, `up` |
-| `pip` / `pip3` | `install` (also `python -m pip install`) |
-| `poetry` | `add`, `install`, `update`, `lock` |
-| `uv` | `add`, `sync`, `pip install` |
-| `bun`, `pipenv` | `install`, `i`, `add`, `update`, `sync`, `lock` — beyond the CLI forwarder's list (there is no `ossprey bun`), but `ossprey check` is manager-agnostic, so recognising them costs nothing |
+```
+agent runs:   npm ci
+hook rewrites: ossprey npm ci
+ossprey:      scans the project, blocks on malware, else execs the real npm
+```
 
-Two behaviours are worth knowing about:
+It rewrites via `updatedInput` on the `PreToolUse` hook, which replaces a
+tool's arguments before it runs. The rewrite is textual — `ossprey ` is
+inserted in front of the manager and every other byte is left as the agent
+wrote it, so quoting, globs, redirections and here-docs are untouched.
+`ossprey` goes *after* any wrapper or assignment, so `sudo npm i x` becomes
+`sudo ossprey npm i x` and `CI=1 npm ci` becomes `CI=1 ossprey npm ci`.
 
-- **Named packages → `ossprey check`.** Flags are parsed per manager, before
-  and after the verb: `npm --prefix /tmp install x`, `pnpm --filter web add x`,
-  `--index-url=…` inline values, and value-taking flags whose value must not be
-  read as a package. The tables are per-manager and never shared — `pnpm -w` is
-  boolean (`--workspace-root`) where `npm -w` takes a value, and conflating the
-  two is what hid `pnpm add -w <pkg>` in the CLI.
-- **No packages named → `ossprey scan`.** A bare `npm install`, `npm ci`,
-  `yarn install`, `poetry install`, `uv sync`, or `pip install -r req.txt`
-  installs from the manifest or lockfile, so there is nothing on the command
-  line to check. Rather than let it through unchecked, the hook scans the
-  project it is about to install into and denies on a malware verdict. This
-  scan is **blocking** — that is the point — so a manifest install waits for a
-  verdict (up to `OSSPREY_HOOK_SCAN_TIMEOUT`, default 180s, then fails open).
-  A leading `cd` is followed, so `cd api && npm ci` scans `api`.
+**Nothing here duplicates the CLI's parsing**, which is the point: no install
+verbs, no per-manager flag tables, no spec normalisation, no manifest-install
+detection. There is nothing to keep in step and nothing that can drift.
 
-An install whose only targets are local paths, archives, URLs or VCS refs
-can't be resolved against a registry. Those are named to the agent as
-unverified rather than passed off as clean, matching the CLI's warning.
+`npm`, `pnpm`, `yarn`, `pip`, `pip3`, `poetry` and `uv` are routed — exactly
+the managers `ossprey <bin>` exists for (`forward.Managers()` in the CLI).
+Every invocation of one is routed, not just installs: the forwarder execs
+non-install commands straight through, which is also how the CLI's own PATH
+shims work. So `npm run build` runs as `ossprey npm run build` and behaves
+identically, at the cost of one extra process.
 
-Commands that install nothing are left alone entirely: `npm run build`,
-`pip list`, and `pnpm run add` (a script run, not an install of a package
-called `add`). So is anything already wrapped in `ossprey …`, which
-self-checks.
+Three things can't be routed, and are reported to the agent as unverified
+rather than passed off as covered:
+
+| Not routed | Why |
+|------------|-----|
+| `bun`, `pipenv` | The CLI has no `ossprey bun` / `ossprey pipenv` forwarder, so there is nothing to route them through |
+| `python -m pip install …` | `ossprey pip` would install with a different interpreter than the agent asked for |
+| `/usr/local/bin/npm install …` | The forwarder takes a manager name, not a path, so it would resolve a different binary |
+
+A command already wrapped in `ossprey …` is left alone — it self-checks.
+So is anything that isn't a package manager, and a manager name that isn't a
+command head (`echo npm install`, `git commit -m "npm install"`).
 
 For coverage outside the agent's Bash tool — Makefiles, CI steps, your own
-terminal — the CLI also ships PATH shims (`ossprey shim install`), which put
-`ossprey` ahead of the real package managers. The hook and the shims overlap
-harmlessly: a shimmed install is an `ossprey`-wrapped install as far as the
-hook is concerned, so it is not double-checked.
+terminal — the CLI ships PATH shims (`ossprey shim install`) that put
+`ossprey` in front of the real managers. The two overlap harmlessly: a
+shimmed `npm` is already an `ossprey` install as far as the hook is
+concerned.
+
+#### One thing to know about permission rules
+
+The command your permission rules see is the rewritten one. A rule for
+`Bash(npm install:*)` no longer matches, because the command is now
+`ossprey npm install …`. Allowlist `Bash(ossprey:*)` instead if you want
+installs to run without a prompt.
 
 ### Fail-open by design
 
-The hooks never block development on infrastructure problems. A missing CLI,
-missing credentials, network error, or timeout leaves the command alone and
-attaches a warning for the agent and the transcript. The only thing that
-blocks a command is an explicit malware verdict from the Ossprey API.
-Blocking decisions happen in the `PreToolUse` hook, so a malicious package
-is stopped even if the agent ignores the session guidance — including on a
-bare `npm install`, where the packages are named nowhere on the command line.
+The hooks never block development on infrastructure problems. Without the
+CLI on `PATH` the command is left exactly as the agent wrote it, with a
+warning for the agent and the transcript — a rewrite to a CLI that is not
+installed would turn a working install into `ossprey: command not found`.
+Missing credentials, a network error, or a timeout are the CLI's own
+fail-open paths, and it forwards to the real package manager rather than
+blocking on them.
 
-Note what fail-open does **not** mean here: a clean verdict never returns
-`permissionDecision: "allow"`. In Claude Code an explicit allow bypasses your
-own permission rules for that command, and a malware check has no business
-granting permissions it wasn't asked about — so on a clean result the hook
-emits context only and lets the normal permission flow run. Denying is the
-one decision it makes.
+The only thing that stops an install is an explicit malware verdict, and it
+stops inside the CLI, before the real package manager is exec'd. That holds
+even if the agent ignores the session guidance entirely: the routing is done
+by the hook, not by the agent choosing to type `ossprey`.
+
+The hook renders **no permission decision** — not even on a clean command.
+Rewriting a command is not a reason to grant it permission, and an explicit
+`permissionDecision: "allow"` would skip your own rules for that command.
+Your rules still decide; they just see the wrapped command.
 
 When the CLI reports it has no credentials, the hooks go one step further
 than a warning: they tell the agent to offer to run `ossprey login` in the
@@ -223,13 +233,11 @@ All knobs are environment variables:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `OSSPREY_API_KEY` | from `~/.config/ossprey/env` | API key (only needed without `ossprey login`) |
-| `OSSPREY_BIN` | `ossprey` on `PATH` | CLI binary override |
-| `OSSPREY_HOOK_TIMEOUT` | `60` | Seconds to wait for `ossprey check` |
-| `OSSPREY_HOOK_SCAN_TIMEOUT` | `180` | Seconds to wait for the guard's blocking `ossprey scan` of a manifest install |
-| `OSSPREY_HOOK_DEBOUNCE` | `30` | Min seconds between rescans of a directory |
+| `OSSPREY_BIN` | `ossprey` on `PATH` | CLI binary override, for the hooks' own calls. A rewritten command calls `ossprey` by name when that resolves on `PATH`, and falls back to this path when it doesn't |
+| `OSSPREY_HOOK_DEBOUNCE` | `30` | Min seconds between background rescans of a directory |
 | `OSSPREY_HOOK_MAX_FOLLOWUPS` | `2` | Max Stop-hook remediation prompts per session |
 | `OSSPREY_HOOK_STATE_DIR` | `<tmpdir>/ossprey-claude` | Where background scan findings are recorded |
-| `OSSPREY_HOOK_CHECK_ARGS` / `OSSPREY_HOOK_SCAN_ARGS` | — | Extra CLI args (e.g. `--url` for a staging API, `--dry-run-malicious` for demos) |
+| `OSSPREY_HOOK_SCAN_ARGS` | — | Extra args for the audit hook's `ossprey scan` (e.g. `--url` for a staging API) |
 | `OSSPREY_HOOKS_STYLE` | `windows` on Windows, else `posix` | Which hook wiring a local install applies |
 
 The hooks read any `KEY=VALUE` lines in `~/.config/ossprey/env`
@@ -237,6 +245,10 @@ The hooks read any `KEY=VALUE` lines in `~/.config/ossprey/env`
 `%USERPROFILE%\.config\ossprey\env`) as defaults, so every variable above
 can be set there instead of in Claude Code's process environment. Real
 environment variables win over the file.
+
+The guard hook takes no options because it runs nothing: it rewrites the
+command and the CLI's own configuration (`OSSPREY_API_URL`,
+`OSSPREY_API_KEY`) takes over from there.
 
 The Stop hook is capped at `OSSPREY_HOOK_MAX_FOLLOWUPS` blocks per session
 and stands down as soon as Claude Code reports `stop_hook_active`, so a
@@ -276,9 +288,11 @@ The install must be denied with a malware message. The package contains no
 malicious code, so nothing bad happens even if a blocking layer is
 misconfigured and it does get installed.
 
-Alternatively, set `OSSPREY_HOOK_CHECK_ARGS=--dry-run-malicious` and ask the
-agent to install any package — same expected result, without touching the
-live verdict path. Unset the variable afterwards.
+The install must fail with a malware message, and the transcript should show
+the command as `ossprey npm install @ossprey/test-package` — that is the hook
+doing its job. (The CLI's `--dry-run-malicious` flag works on
+`ossprey check`, not on the forwarder, so there is no hook-side dry run to
+set: the forwarder passes every argument through to the package manager.)
 
 ## Repository layout
 

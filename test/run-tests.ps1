@@ -173,173 +173,122 @@ $plumbing = Invoke-Guard 'npm install plumbing-probe' 'safe'
 Check 'the entrypoint forwards the payload to the hook script' (Get-Log) 'plumbing-probe'
 Check 'a delivered payload produces a verdict, not silence' $plumbing 'additionalContext'
 
-Write-Host "== PreToolUse (guard): named packages =="
+Write-Host "== PreToolUse (guard): routing through the forwarder =="
+
+# The guard does not reach a verdict — it rewrites the command so the Ossprey
+# CLI's forwarder does the checking inside its own process, before the real
+# package manager runs. So these assert on the rewritten command, and that the
+# guard ran nothing at all.
+#
+# A rewritten command prefers the bare name whenever `ossprey` resolves on
+# PATH, so put a stub there: the assertions then read the same on every
+# platform, instead of carrying a JSON-escaped Windows path.
+$stubDir = Join-Path $Work 'stub'
+New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
+[IO.File]::WriteAllText((Join-Path $stubDir 'ossprey.cmd'), "@echo off`r`nexit /b 0`r`n")
+$env:PATH = "$stubDir$([IO.Path]::PathSeparator)$env:PATH"
 
 Reset-Log
-$out = Invoke-Guard 'npm install evil-pkg@1.0.0' 'malware'
-Check 'malicious npm install is denied' $out '"permissionDecision": "deny"'
-Check 'deny names the right event' $out '"hookEventName": "PreToolUse"'
-Check 'deny carries the malware detail' $out 'contains malware'
-Check 'mock got the right check argv' (Get-Log) 'check -e npm evil-pkg@1.0.0'
+$out = Invoke-Guard 'npm install left-pad' 'safe'
+Check 'an install is routed through the forwarder' $out '"command": "ossprey npm install left-pad"'
+Check 'the rewrite is reported to the agent' $out 'ossprey npm'
+Check-Absent 'the guard runs no CLI of its own' (Get-Log) 'check'
+# Rewriting a command is not a reason to grant it permission: the user's own
+# rules still decide, they just see the wrapped command.
+Check-Absent 'the guard renders no permission decision' $out 'permissionDecision'
+Check 'the rewrite names the right event' $out '"hookEventName": "PreToolUse"'
 
-Reset-Log
-$out = Invoke-Guard 'npm install lodash react@18.2.0' 'safe'
-Check 'clean npm install reports the check' $out 'checked 2 npm package(s)'
-Check 'both packages were checked' (Get-Log) 'check -e npm lodash react@18.2.0'
-# A clean verdict must NOT auto-approve the command: an explicit allow would
-# bypass the user's own permission rules for that Bash call.
-Check-Absent 'clean verdict does not auto-approve' $out 'permissionDecision'
-
-Reset-Log
-$out = Invoke-Guard 'pip install requests==2.31.0 flask' 'safe'
-Check 'pip install checked as pypi' (Get-Log) 'check -e pypi requests==2.31.0 flask'
-
-Reset-Log
-$out = Invoke-Guard 'cd /tmp/proj && yarn add left-pad' 'safe'
-Check 'compound command still checked' (Get-Log) 'check -e npm left-pad'
-
-Reset-Log
-$out = Invoke-Guard 'uv pip install flask>=2.0' 'safe'
-Check 'uv pip install checked, range stripped' (Get-Log) 'check -e pypi flask'
-
-Reset-Log
-$out = Invoke-Guard 'npm install @ossprey/test-package' 'safe'
-Check 'scoped package name kept intact' (Get-Log) 'check -e npm @ossprey/test-package'
-
-# Every install verb the CLI forwarder recognises, per manager. Missing one
-# means that install form reaches the machine unchecked.
-foreach ($case in @(
-    @('npm', 'i'), @('npm', 'add'), @('npm', 'update'), @('npm', 'up'),
-    @('pnpm', 'add'), @('pnpm', 'update'),
-    @('yarn', 'add'), @('yarn', 'upgrade'), @('yarn', 'up'),
-    @('poetry', 'add'), @('poetry', 'update'),
-    @('uv', 'add'), @('bun', 'add'))) {
-    Reset-Log
-    $null = Invoke-Guard "$($case[0]) $($case[1]) somepkg" 'safe'
-    Check "$($case[0]) $($case[1]) checks the named package" (Get-Log) 'somepkg'
-}
-
-Write-Host "== PreToolUse (guard): flags before and after the verb =="
-
-# Global flags precede the verb for most managers, and pnpm workspaces do it as
-# a matter of course. Reading only the first token classified these as
-# "not an install" and let them through unchecked.
-Reset-Log
-$out = Invoke-Guard 'pnpm --filter web add left-pad' 'safe'
-Check 'global flag before the verb still an install' (Get-Log) 'check -e npm left-pad'
-
-Reset-Log
-$out = Invoke-Guard 'npm --prefix /tmp install left-pad' 'safe'
-Check 'npm --prefix value not read as the verb' (Get-Log) 'check -e npm left-pad'
-
-# pnpm's -w is boolean (--workspace-root) where npm's -w takes a value. Sharing
-# one flag table between them is what hid `pnpm add -w <pkg>` in the CLI.
-Reset-Log
-$out = Invoke-Guard 'pnpm add -w left-pad' 'safe'
-Check 'pnpm -w is boolean: the package is still checked' (Get-Log) 'check -e npm left-pad'
-
-Reset-Log
-$out = Invoke-Guard 'npm install -w web left-pad' 'safe'
-Check 'npm -w takes a value: only the package is checked' (Get-Log) 'check -e npm left-pad'
-Check-Absent 'npm -w value not treated as a package' (Get-Log) 'web'
-
-Reset-Log
-$out = Invoke-Guard 'pip install --index-url=https://example.com/simple flask' 'safe'
-Check 'inline --flag=value handled' (Get-Log) 'check -e pypi flask'
-
-Reset-Log
-$out = Invoke-Guard 'poetry add -G dev requests' 'safe'
-Check 'poetry -G value not treated as a package' (Get-Log) 'check -e pypi requests'
-
-Write-Host "== PreToolUse (guard): manifest installs scan the project =="
-
-# An install that names no packages takes them from the manifest/lockfile, so
-# there is nothing on the command line to check. The CLI forwarder scans the
-# project instead of forwarding unchecked (OSS-1284); so does the hook.
-foreach ($cmd in @('npm install', 'npm ci', 'pnpm install', 'yarn install',
-                   'poetry install', 'poetry lock', 'uv sync',
-                   'pip install -r reqs.txt')) {
+# Every install form the forwarder handles, routed without the hook needing to
+# know which of them are installs — that is the CLI's job.
+foreach ($cmd in @('npm install', 'npm ci', 'npm i left-pad', 'npm add left-pad',
+                   'npm update', 'pnpm install', 'pnpm add -w left-pad',
+                   'yarn install', 'yarn add left-pad', 'yarn upgrade',
+                   'poetry install', 'poetry lock', 'poetry add requests',
+                   'pip install requests', 'pip install -r requirements.txt',
+                   'pip3 install requests', 'uv sync', 'uv add httpx',
+                   'uv pip install flask')) {
     Reset-Log
     $out = Invoke-Guard $cmd 'safe'
-    Check "``$cmd`` scans the project" (Get-Log) 'scan'
-    Check "``$cmd`` reports the scan" $out 'checked the project'
+    Check "``$cmd`` is routed through the forwarder" $out "ossprey $cmd"
 }
 
-Reset-Log
-$out = Invoke-Guard 'npm ci' 'malware'
-Check 'malware in the manifest denies the install' $out '"permissionDecision": "deny"'
-Check 'manifest deny explains where it looked' $out 'takes its packages from the project manifest'
-Check 'manifest deny carries the finding' $out 'contains malware'
+Write-Host "== PreToolUse (guard): the rewrite preserves the command =="
 
 Reset-Log
-$out = Invoke-Guard 'npm install lodash && npm ci' 'safe'
-Check 'named packages are checked' (Get-Log) 'check -e npm lodash'
-Check 'and the manifest install is scanned' (Get-Log) 'scan'
+$out = Invoke-Guard 'cd api && npm ci' 'safe'
+Check 'a leading cd is left alone' $out '"command": "cd api && ossprey npm ci"'
 
 Reset-Log
-$out = Invoke-Guard 'npm ci' 'error'
-Check-Absent 'a failed scan fails open' $out 'deny'
-Check 'a failed scan is flagged' $out 'could not scan'
-
-Write-Host "== PreToolUse (guard): nothing to check =="
+$out = Invoke-Guard 'npm install a && npm test' 'safe'
+Check 'every manager invocation is routed' $out 'ossprey npm install a && ossprey npm test'
 
 Reset-Log
-$out = Invoke-Guard 'ls -la && git status' 'malware'
-Check-Absent 'non-install command is not denied' $out 'deny'
-Check 'non-install command exits 0' $out 'exit=0'
-Check-Absent 'non-install command never calls ossprey' (Get-Log) 'check'
-
-# `pnpm run add` is a script run, not an install of a package called "add".
-Reset-Log
-$out = Invoke-Guard 'pnpm run add' 'malware'
-Check-Absent 'a script run named like a verb is not an install' (Get-Log) 'add'
+$out = Invoke-Guard 'CI=1 npm ci' 'safe'
+Check 'ossprey is inserted after env assignments' $out 'CI=1 ossprey npm ci'
 
 Reset-Log
-$out = Invoke-Guard 'npm run build && pip list' 'malware'
-Check-Absent 'other manager subcommands are not installs' (Get-Log) 'check'
+$out = Invoke-Guard 'if npm ci; then echo ok; fi' 'safe'
+Check 'ossprey is inserted after a shell keyword' $out 'if ossprey npm ci; then echo ok; fi'
 
 Reset-Log
-$out = Invoke-Guard 'ossprey npm install evil-pkg' 'malware'
-Check-Absent 'forwarder-wrapped install passes through' $out 'deny'
-Check-Absent 'forwarder-wrapped install is not double-checked' (Get-Log) 'check'
+$out = Invoke-Guard 'npm install x > out.log 2>&1' 'safe'
+Check 'redirections are preserved' $out 'ossprey npm install x > out.log 2>&1'
+
+# updatedInput replaces the entire input object, so dropping a field would
+# silently change how the command runs.
+Reset-Log
+$out = Invoke-Hook -Event 'guard' -Mode 'safe' -Payload (New-Payload @{
+    session_id = 's'
+    hook_event_name = 'PreToolUse'
+    tool_name = 'Bash'
+    tool_input = @{ command = 'npm ci'; description = 'install deps'; timeout = 120000 }
+})
+Check 'other tool_input fields survive the rewrite' $out '"description": "install deps"'
+Check 'the timeout survives the rewrite' $out '"timeout": 120000'
+
+Write-Host "== PreToolUse (guard): commands left alone =="
 
 Reset-Log
-$out = Invoke-Guard 'npm install ./local-pkg ../other git+https://github.com/x/y.git' 'safe'
-Check-Absent 'local/vcs-only install is not denied' $out 'deny'
-Check-Absent 'local/vcs targets never checked' (Get-Log) 'check'
-Check 'unchecked targets are named to the agent' $out 'non-registry install targets'
+$out = Invoke-Guard 'ls -la && git status' 'safe'
+Check 'a non-manager command exits 0' $out 'exit=0'
+Check-Absent 'a non-manager command gets no rewrite' $out 'updatedInput'
 
 Reset-Log
-$out = Invoke-Guard 'pip install requests -r extra.txt -t ./vendor flask ./local.whl' 'safe'
-Check 'mixed install checks the registry packages' (Get-Log) 'check -e pypi requests flask'
-Check 'mixed install names what it skipped' $out './local.whl'
-Check-Absent '-t value not treated as a package' (Get-Log) 'vendor'
+$out = Invoke-Guard 'ossprey npm install evil-pkg' 'safe'
+Check-Absent 'an already-wrapped install is not double-wrapped' $out 'updatedInput'
+
+Reset-Log
+$out = Invoke-Guard 'echo npm install' 'safe'
+Check-Absent 'a manager named mid-command is not a command head' $out 'updatedInput'
+
+Write-Host "== PreToolUse (guard): what cannot be routed is reported =="
+
+# `ossprey <bin>` exists only for the managers the CLI forwards. Wrapping
+# anything else would fail with "unknown command", so these are left alone —
+# and said out loud rather than passed off as covered.
+Reset-Log
+$out = Invoke-Guard 'bun add left-pad' 'safe'
+Check-Absent 'bun is not wrapped' $out 'updatedInput'
+Check 'bun is reported as unchecked' $out 'forwarder'
+
+Reset-Log
+$out = Invoke-Guard 'python3 -m pip install requests' 'safe'
+Check-Absent 'python -m pip is not rewritten' $out 'updatedInput'
+Check 'python -m pip is reported as unchecked' $out 'which interpreter installs'
 
 Write-Host "== PreToolUse (guard): fail-open =="
 
+# Rewriting to a CLI that is not installed would turn a working install into
+# "ossprey: command not found", so a missing CLI means no rewrite at all. The
+# PATH stub has to go for this one, or the bare name would still resolve.
 Reset-Log
-$out = Invoke-Guard 'npm install some-pkg' 'error'
-Check-Absent 'API error fails open' $out 'deny'
-Check 'fail-open is flagged to the agent' $out 'proceeding without a verdict'
-Check 'fail-open is flagged to the user' $out 'systemMessage'
-
-Reset-Log
-$out = Invoke-Guard 'npm install some-pkg' 'auth'
-Check-Absent 'signed-out check fails open' $out 'deny'
-Check 'signed-out check steers the agent to ossprey login' $out 'ossprey login'
-Check 'signed-out guidance mentions whoami confirmation' $out 'ossprey whoami'
-
-Reset-Log
-$out = Invoke-Guard 'npm ci' 'auth'
-Check-Absent 'signed-out scan fails open' $out 'deny'
-Check 'signed-out scan steers the agent to ossprey login' $out 'ossprey login'
-
-Reset-Log
-$out = Invoke-Guard 'npm install some-pkg' 'safe' @{ OSSPREY_BIN = (Join-Path $Work 'does-not-exist') }
+$out = Invoke-Guard 'npm install some-pkg' 'safe' @{
+    OSSPREY_BIN = (Join-Path $Work 'does-not-exist')
+    PATH = (Join-Path $env:SystemRoot 'System32')
+}
 Check 'missing CLI fails open with a warning' $out 'Ossprey CLI not found'
-
-$out = Invoke-Guard 'npm ci' 'safe' @{ OSSPREY_BIN = (Join-Path $Work 'does-not-exist') }
-Check 'missing CLI fails open on a manifest install too' $out 'Ossprey CLI not found'
+Check-Absent 'missing CLI does not rewrite the command' $out 'updatedInput'
+Check 'missing CLI is flagged to the user' $out 'systemMessage'
 
 # The entrypoint must fail open when no Python 3 is on PATH, exactly like the
 # sh entrypoints do. Keep System32 on PATH so cmd.exe still resolves; the
@@ -430,17 +379,28 @@ Check 'context carries the rules' $out 'Ossprey dependency safety'
 
 Write-Host "== config file fallback =="
 
+# The hooks read ~/.config/ossprey/env so the API key (and any other knob) can
+# be set once, instead of in the environment Claude Code inherits. The guard
+# runs no CLI now, so the key is asserted where a CLI actually runs: the audit
+# hook's background scan.
 $xdg = Join-Path $Work 'xdg'
 New-Item -ItemType Directory -Force -Path (Join-Path $xdg 'ossprey') | Out-Null
 Set-Content -Path (Join-Path $xdg 'ossprey/env') -Value 'OSSPREY_API_KEY=test-key-123'
 
 Reset-Log
-$out = Invoke-Guard 'npm install lodash' 'safe' @{ XDG_CONFIG_HOME = $xdg }
-Check 'guard proceeds with a config-file key' $out 'no known malware'
+$auditPayload = New-Payload @{
+    session_id = 'sess-cfg'
+    hook_event_name = 'PostToolUse'
+    tool_name = 'Edit'
+    tool_input = @{ file_path = $manifest }
+}
+$out = Invoke-Hook -Event 'audit' -Mode 'safe' -Payload $auditPayload -Env @{ XDG_CONFIG_HOME = $xdg }
+Wait-ForLog 'key=test-key-123' | Out-Null
 Check 'CLI received the key from the config file' (Get-Log) 'key=test-key-123'
 
 Reset-Log
-$out = Invoke-Guard 'npm install lodash' 'safe' @{ XDG_CONFIG_HOME = $xdg; OSSPREY_API_KEY = 'env-key' }
+$out = Invoke-Hook -Event 'audit' -Mode 'safe' -Payload $auditPayload -Env @{ XDG_CONFIG_HOME = $xdg; OSSPREY_API_KEY = 'env-key' }
+Wait-ForLog 'key=env-key' | Out-Null
 Check 'env var beats the config file' (Get-Log) 'key=env-key'
 
 }  # end Windows-only hook tests

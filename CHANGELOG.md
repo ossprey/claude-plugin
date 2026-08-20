@@ -2,44 +2,55 @@
 
 ## Unreleased
 
-- **The guard hook now covers every install path the Ossprey CLI's forwarder
-  handles.** It is a port of `internal/forward` in ossprey-cli — the code
-  behind `ossprey npm install …` — so a command is treated the same way
-  whether the agent wraps it or not. What this adds over 0.1.0:
-  - **Manifest installs are scanned instead of waved through.** A bare
-    `npm install`, `npm ci`, `yarn install`, `pnpm install`,
-    `poetry install`, `poetry lock`, `uv sync`, or `pip install -r req.txt`
-    names no packages, so there was nothing for `ossprey check` to look at
-    and the command went unchecked. The hook now runs a blocking
-    `ossprey scan` of the project it is installing into and denies on a
-    malware verdict (`OSSPREY_HOOK_SCAN_TIMEOUT`, default 180s, then fails
-    open). A leading `cd` is followed, so `cd api && npm ci` scans `api`.
-  - **Install verbs beyond the obvious ones**: `npm i/add/ci/update/up`,
-    `pnpm update/up`, `yarn install/upgrade/up`, `poetry install/update/lock`,
-    `uv sync`. Previously only `install`/`i`/`add` (and `poetry add`,
-    `uv add`) were recognised, so `npm ci` and `yarn upgrade` were invisible.
-  - **Global flags before the verb**: `npm --prefix /tmp install x`,
-    `pnpm --filter web add x`, `pip --quiet install x`. Reading only the first
-    token classified these as "not an install" — and pnpm workspaces write
-    them as a matter of course.
-  - **Per-manager flag tables, never shared.** `pnpm -w` is boolean
-    (`--workspace-root`) where `npm -w` takes a value; one shared table per
-    ecosystem is what hid `pnpm add -w <pkg>` in the CLI (OSS-1577). Also
-    handles `--flag=value` inline values and `--` ending option parsing.
-  - **Un-checkable targets are reported, not ignored.** An install of only
-    local paths, archives, URLs or VCS refs now tells the agent what went
-    unverified instead of exiting silently, matching the CLI's warning.
-  - Spec parsing follows the CLI's `ParseSpec` (last `@` for npm, so
-    `@scope/name@1.2.3` splits correctly). One deliberate difference: a range
-    or tag (`foo@^1.2.3`, `foo@latest`) reduces to a bare name so
-    `ossprey check` resolves and checks the latest published version, rather
-    than submitting a range as if it were a version.
-- **Docs point at `ossprey shim install`** for the installs the hook cannot
-  see — Makefiles, CI steps, another terminal. The two overlap harmlessly: a
-  shimmed install looks `ossprey`-wrapped to the hook, so it is not
-  double-checked.
-- Test suites grew to cover each manager's verbs, the flag-parsing cases, the
-  manifest-scan path, and the deny wording for both (139 assertions POSIX).
+- **The guard hook routes commands through the CLI instead of adjudicating
+  them.** `ossprey npm install left-pad` already checks the named packages —
+  and, for an install that names none, scans the project manifest — inside
+  the CLI before it execs the real npm. So the hook stopped calling
+  `ossprey check` / `ossprey scan` to reach its own verdict and now rewrites
+  the agent's command (`npm ci` → `ossprey npm ci`) via `updatedInput` on
+  `PreToolUse`, letting the CLI decide.
+
+  This deleted every copy of the CLI's install-command logic from the plugin:
+  no manager verb lists, no per-manager flag tables, no spec normalisation,
+  no manifest-install detection, no `--flag=value` handling. There is nothing
+  left to keep in step with the CLI and nothing that can drift, and coverage
+  now follows the CLI automatically — including install forms added to it
+  later. `hooks/ossprey_hook.py` lost ~210 lines.
+
+  Consequences worth knowing:
+  - **Every invocation of a routed manager is rewritten, not just installs.**
+    `npm run build` runs as `ossprey npm run build`; the forwarder execs
+    non-install commands straight through, which is also how the CLI's own
+    PATH shims behave. Cost is one extra process.
+  - **Permission rules see the rewritten command.** A rule for
+    `Bash(npm install:*)` no longer matches — allowlist `Bash(ossprey:*)`.
+  - **The verdict arrives as a failed command**, not as a hook denial: the
+    CLI exits non-zero with the malware report and never runs the package
+    manager. The hook attaches guidance so the agent treats it as a
+    confirmed malicious package rather than a flake to retry.
+  - **The rewrite is textual.** `ossprey ` is inserted in front of the
+    manager token and every other byte is left as written, so quoting,
+    globs, redirections and here-docs survive. It goes after wrappers and
+    assignments: `sudo npm i x` → `sudo ossprey npm i x`, `CI=1 npm ci` →
+    `CI=1 ossprey npm ci`, `if npm ci; then` → `if ossprey npm ci; then`.
+  - **A missing CLI means no rewrite at all**, rather than rewriting to a
+    command that would fail with `ossprey: command not found`.
+  - **`bun` and `pipenv` lost coverage.** The CLI has no `ossprey bun` /
+    `ossprey pipenv` forwarder, so there is nothing to route them through;
+    they are now reported to the agent as unverified. Same for
+    `python -m pip install …` (routing it would change which interpreter
+    installs) and a manager invoked by full path.
+  - `OSSPREY_HOOK_TIMEOUT`, `OSSPREY_HOOK_SCAN_TIMEOUT` and
+    `OSSPREY_HOOK_CHECK_ARGS` are gone: the guard runs nothing, so it has
+    nothing to time out or pass flags to. `OSSPREY_HOOK_SCAN_ARGS` still
+    applies to the audit hook's background scan.
+- **The session guidance stopped telling the agent to type `ossprey`.**
+  Installs are routed for it now, and typing the wrapper by hand fails on
+  setups where the CLI is not on `PATH` but `OSSPREY_BIN` is set.
+- Verified in a real Claude Code session with `ossprey` deliberately off
+  `PATH`, so only the hook's rewrite could reach the CLI: the model typed a
+  bare `npm install left-pad@1.3.0 --dry-run` and the CLI received
+  `npm install left-pad@1.3.0 --dry-run` as its arguments.
 
 ## 0.1.0
 
