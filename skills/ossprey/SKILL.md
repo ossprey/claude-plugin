@@ -49,15 +49,19 @@ Exit code `0` means no malware; `1` means malware found or the check failed
 
 ## Guarded installs
 
-Wrap the package manager so malicious packages are blocked before install:
+Inside Claude Code this is automatic: a `PreToolUse` hook rewrites the
+agent's package-manager commands to run through the forwarder, so a plain
+`npm install <pkg>` is already checked. Type the wrapper yourself only
+outside that path (a script, a terminal, CI):
 
 ```sh
 ossprey npm install <pkg>     # also: yarn add, pip install, poetry add,
 ossprey uv pip install <pkg>  # uv sync, npm ci, ...
 ```
 
-If packages are named, each is checked; a bare manifest install scans the
-project first. On a malware verdict the real package manager never runs.
+If packages are named, each is checked; a bare manifest install (`npm ci`,
+`yarn install`, `poetry install`, `uv sync`, `pip install -r req.txt`) scans
+the project first. On a malware verdict the real package manager never runs.
 
 ## Scan a whole project
 

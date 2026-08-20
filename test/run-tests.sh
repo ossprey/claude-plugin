@@ -65,71 +65,171 @@ check_absent() { # check_absent <name> <haystack> <needle>
   esac
 }
 
-echo "== PreToolUse (guard) =="
+echo "== PreToolUse (guard): routing through the forwarder =="
+
+# The guard does not reach a verdict — it rewrites the command so the Ossprey
+# CLI's forwarder does the checking inside its own process, before the real
+# package manager runs. So these assert on the rewritten command, and that the
+# guard ran nothing at all.
+#
+# The suite points OSSPREY_BIN at the mock, and an explicit OSSPREY_BIN is
+# honoured verbatim in the rewrite, so that path is what the commands call.
+OSSP="$MOCK"
 
 reset
-OUT=$(run_guard malware "npm install evil-pkg@1.0.0")
-check "malicious npm install is denied" "$OUT" '"permissionDecision": "deny"'
-check "deny names the right event" "$OUT" '"hookEventName": "PreToolUse"'
-check "deny carries the malware detail" "$OUT" "contains malware"
-check "mock got the right check argv" "$(cat "$MOCK_LOG")" "check -e npm evil-pkg@1.0.0"
+OUT=$(run_guard safe "npm install left-pad")
+check "an install is routed through the forwarder" "$OUT" "\"command\": \"$OSSP npm install left-pad\""
+check "the rewrite is reported to the agent" "$OUT" "ossprey npm"
+check "the guard runs no CLI of its own" "$(cat "$MOCK_LOG")x" "x"
+# Rewriting a command is not a reason to grant it permission: the user's own
+# rules still decide, they just see the wrapped command.
+check_absent "the guard renders no permission decision" "$OUT" "permissionDecision"
+check "the rewrite names the right event" "$OUT" '"hookEventName": "PreToolUse"'
+
+# Every install form the forwarder handles, routed without the hook needing to
+# know which of them are installs — that is the CLI's job.
+for CMD in "npm install" "npm ci" "npm i left-pad" "npm add left-pad" \
+           "npm update" "pnpm install" "pnpm add -w left-pad" "yarn install" \
+           "yarn add left-pad" "yarn upgrade" "poetry install" "poetry lock" \
+           "poetry add requests" "pip install requests" \
+           "pip install -r requirements.txt" "pip3 install requests" \
+           "uv sync" "uv add httpx" "uv pip install flask"
+do
+  reset
+  OUT=$(run_guard safe "$CMD")
+  check "\`$CMD\` is routed through the forwarder" "$OUT" "$OSSP $CMD"
+done
+
+echo "== PreToolUse (guard): the rewrite preserves the command =="
 
 reset
-OUT=$(run_guard safe "npm install lodash react@18.2.0")
-check "clean npm install reports the check" "$OUT" "checked 2 package(s)"
-check "both packages were checked" "$(cat "$MOCK_LOG")" "check -e npm lodash react@18.2.0"
-# A clean verdict must NOT auto-approve the command: an explicit allow would
-# bypass the user's own permission rules for that Bash call.
-check_absent "clean verdict does not auto-approve" "$OUT" "permissionDecision"
+OUT=$(run_guard safe "cd api && npm ci")
+check "a leading cd is left alone" "$OUT" "\"command\": \"cd api && $OSSP npm ci\""
 
 reset
-OUT=$(run_guard safe "pip install requests==2.31.0 -r reqs.txt")
-check "pip install checked as pypi" "$(cat "$MOCK_LOG")" "check -e pypi requests==2.31.0"
-check_absent "-r value not treated as a package" "$(cat "$MOCK_LOG")" "reqs.txt"
+OUT=$(run_guard safe "npm install a && npm test")
+check "every manager invocation is routed" "$OUT" "$OSSP npm install a && $OSSP npm test"
 
 reset
-OUT=$(run_guard safe "cd /tmp/proj && yarn add left-pad")
-check "compound command still checked" "$(cat "$MOCK_LOG")" "check -e npm left-pad"
+OUT=$(run_guard safe "sudo pip install requests")
+check "ossprey is inserted after sudo" "$OUT" "sudo $OSSP pip install requests"
 
 reset
-OUT=$(run_guard safe "uv pip install flask>=2.0")
-check "uv pip install checked, range stripped" "$(cat "$MOCK_LOG")" "check -e pypi flask"
+OUT=$(run_guard safe "CI=1 npm ci")
+check "ossprey is inserted after env assignments" "$OUT" "CI=1 $OSSP npm ci"
 
 reset
-OUT=$(run_guard malware "ls -la && git status")
-check_absent "non-install command is not denied" "$OUT" "deny"
-check "non-install command exits 0" "$(run_guard_rc malware 'ls -la && git status')" "0"
-check "non-install command never calls ossprey" "$(cat "$MOCK_LOG")x" "x"
+OUT=$(run_guard safe "if npm ci; then echo ok; fi")
+check "ossprey is inserted after a shell keyword" "$OUT" "if $OSSP npm ci; then echo ok; fi"
 
 reset
-OUT=$(run_guard malware "npm install")
-check_absent "bare manifest install is not denied (audit hook covers it)" "$OUT" "deny"
-check "bare install never calls ossprey" "$(cat "$MOCK_LOG")x" "x"
+OUT=$(run_guard safe "npm install x > out.log 2>&1")
+check "redirections are preserved" "$OUT" "$OSSP npm install x > out.log 2>&1"
 
 reset
-OUT=$(run_guard malware "ossprey npm install evil-pkg")
-check_absent "forwarder-wrapped install passes through" "$OUT" "deny"
+OUT=$(run_guard safe "npm install 'c d' --foo=bar")
+check "quoting is preserved byte for byte" "$OUT" "$OSSP npm install 'c d' --foo=bar"
+
+# Separators without surrounding spaces, and newlines, must still start a new
+# command. A shlex-based parser missed both: it drops newlines and leaves `;`
+# stuck to its neighbour, so the second install went unrouted.
+reset
+OUT=$(run_guard safe "npm i a;npm i b")
+check "an unspaced semicolon starts a new command" "$OUT" "$OSSP npm i a;$OSSP npm i b"
 
 reset
-OUT=$(run_guard safe "npm install ./local-pkg ../other git+https://github.com/x/y.git")
-check_absent "local/vcs-only install is not denied" "$OUT" "deny"
-check "local/vcs targets never checked" "$(cat "$MOCK_LOG")x" "x"
+OUT=$(run_guard safe "npm i a&&npm i b")
+check "an unspaced && starts a new command" "$OUT" "$OSSP npm i a&&$OSSP npm i b"
 
 reset
-OUT=$(run_guard error "npm install some-pkg")
-check_absent "API error fails open" "$OUT" "deny"
-check "fail-open is flagged to the agent" "$OUT" "proceeding without a verdict"
-check "fail-open is flagged to the user" "$OUT" "systemMessage"
+# json_str escapes the newline properly; a raw one inside a JSON string would
+# make the payload unparseable, which the hook treats as "no command".
+NL_CMD="$(printf 'cd api\nnpm install evil')"
+OUT=$(run_guard safe "$NL_CMD")
+check "an install on the next line is routed" "$OUT" "$OSSP npm install evil"
+
+# updatedInput replaces the entire input object, so dropping a field would
+# silently change how the command runs.
+reset
+OUT=$(printf '{"session_id":"s","cwd":"/tmp/proj","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm ci","description":"install deps","timeout":120000,"run_in_background":false}}' \
+  | MOCK_MODE=safe sh "$GUARD")
+check "other tool_input fields survive the rewrite" "$OUT" '"description": "install deps"'
+check "the timeout survives the rewrite" "$OUT" '"timeout": 120000'
+check "run_in_background survives the rewrite" "$OUT" '"run_in_background": false'
+
+# A rewritten command prefers the bare name whenever `ossprey` resolves on
+# PATH — readable, and it picks up a `ossprey shim install` shim. The absolute
+# path is the fallback for a CLI that is not on PATH at all.
+reset
+FAKEBIN="$WORK/fakebin"
+mkdir -p "$FAKEBIN"
+printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/ossprey"
+chmod +x "$FAKEBIN/ossprey"
+OUT=$(printf '{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm ci"}}' \
+  | (unset OSSPREY_BIN; PATH="$FAKEBIN:$PATH" sh "$GUARD"))
+check "a PATH-resolved CLI is called by bare name" "$OUT" '"command": "ossprey npm ci"'
+
+OUT=$(printf '{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm ci"}}' \
+  | PATH="$FAKEBIN:$PATH" sh "$GUARD")
+check "the bare name wins over OSSPREY_BIN when it resolves" "$OUT" '"command": "ossprey npm ci"'
+
+echo "== PreToolUse (guard): commands left alone =="
 
 reset
-OUT=$(run_guard auth "npm install some-pkg")
-check_absent "signed-out check fails open" "$OUT" "deny"
-check "signed-out check steers the agent to ossprey login" "$OUT" "ossprey login"
-check "signed-out guidance mentions whoami confirmation" "$OUT" "ossprey whoami"
+OUT=$(run_guard safe "ls -la && git status")
+check "a non-manager command exits 0" "$(run_guard_rc safe 'ls -la && git status')" "0"
+check_absent "a non-manager command gets no rewrite" "$OUT" "updatedInput"
 
+reset
+OUT=$(run_guard safe "ossprey npm install evil-pkg")
+check_absent "an already-wrapped install is not double-wrapped" "$OUT" "updatedInput"
+
+reset
+OUT=$(run_guard safe "echo npm install")
+check_absent "a manager named mid-command is not a command head" "$OUT" "updatedInput"
+
+reset
+OUT=$(run_guard safe "git commit -m \"npm install\"")
+check_absent "a manager inside a quoted string is left alone" "$OUT" "updatedInput"
+
+echo "== PreToolUse (guard): what cannot be routed is reported =="
+
+# `ossprey <bin>` exists only for the managers the CLI forwards. Wrapping
+# anything else would fail with "unknown command", so these are left alone —
+# and said out loud rather than passed off as covered.
+reset
+OUT=$(run_guard safe "bun add left-pad")
+check_absent "bun is not wrapped" "$OUT" "updatedInput"
+check "bun is reported as unchecked" "$OUT" "no \`ossprey bun\` forwarder"
+
+reset
+OUT=$(run_guard safe "pipenv install")
+check "pipenv is reported as unchecked" "$OUT" "no \`ossprey pipenv\` forwarder"
+
+reset
+OUT=$(run_guard safe "python3 -m pip install requests")
+check_absent "python -m pip is not rewritten" "$OUT" "updatedInput"
+check "python -m pip is reported as unchecked" "$OUT" "which interpreter installs"
+
+reset
+OUT=$(run_guard safe "/usr/local/bin/npm install x")
+check_absent "a path-qualified manager is not rewritten" "$OUT" "updatedInput"
+check "a path-qualified manager is reported as unchecked" "$OUT" "invoked by full path"
+
+echo "== PreToolUse (guard): fail-open =="
+
+# Rewriting to a CLI that is not installed would turn a working install into
+# "ossprey: command not found", so a missing CLI means no rewrite at all.
 reset
 OUT=$( (OSSPREY_BIN="$WORK/does-not-exist"; export OSSPREY_BIN; run_guard safe "npm install some-pkg") )
 check "missing CLI fails open with a warning" "$OUT" "Ossprey CLI not found"
+check_absent "missing CLI does not rewrite the command" "$OUT" "updatedInput"
+check "missing CLI is flagged to the user" "$OUT" "systemMessage"
+
+reset
+OUT=$( (OSSPREY_BIN="$WORK/does-not-exist"; export OSSPREY_BIN; run_guard safe "npm ci") )
+check "missing CLI fails open on a manifest install too" "$OUT" "Ossprey CLI not found"
+
 
 echo "== PostToolUse (audit) + Stop (report) =="
 
@@ -193,24 +293,41 @@ echo "== SessionStart (context) =="
 OUT=$(printf '{"session_id":"sess-f","hook_event_name":"SessionStart","source":"startup"}' | sh "$CONTEXT")
 check "session start injects context" "$OUT" '"hookEventName": "SessionStart"'
 check "context carries the rules" "$OUT" "Ossprey dependency safety"
-check "context teaches guarded installs" "$OUT" "ossprey npm install"
+# The guidance must NOT tell the agent to type the wrapper: the hook routes
+# installs for it, and typing `ossprey` by hand fails where the CLI is not on
+# PATH but OSSPREY_BIN is.
+check "context says to install the normal way" "$OUT" "Install packages the normal way"
+check_absent "context does not ask the agent to type the wrapper" "$OUT" "prefer wrapping the package manager"
+check "context explains how a malware block reads" "$OUT" "contains malware"
 
 echo "== config file fallback =="
 
+# The hooks read ~/.config/ossprey/env so the API key (and any other knob) can
+# be set once, instead of in the environment Claude Code inherits. The guard
+# runs no CLI now, so the key is asserted where a CLI actually runs: the audit
+# hook's background scan.
 XDG="$WORK/xdg"
 mkdir -p "$XDG/ossprey"
 printf 'OSSPREY_API_KEY=test-key-123\n' > "$XDG/ossprey/env"
 
 reset
-OUT=$(printf '{"session_id":"sess-g","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm install lodash"}}' \
-  | XDG_CONFIG_HOME="$XDG" MOCK_MODE=safe sh "$GUARD")
-check "guard proceeds with a config-file key" "$OUT" "no known malware"
+PAYLOAD=$(printf '{"session_id":"sess-cfg","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"%s/proj/package.json"}}' "$WORK")
+echo "$PAYLOAD" | XDG_CONFIG_HOME="$XDG" MOCK_MODE=safe sh "$AUDIT"
+sleep 1
 check "CLI received the key from the config file" "$(cat "$MOCK_LOG")" "key=test-key-123"
 
 reset
-OUT=$(printf '{"session_id":"sess-h","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm install lodash"}}' \
-  | XDG_CONFIG_HOME="$XDG" OSSPREY_API_KEY=env-key MOCK_MODE=safe sh "$GUARD")
+echo "$PAYLOAD" | XDG_CONFIG_HOME="$XDG" OSSPREY_API_KEY=env-key MOCK_MODE=safe sh "$AUDIT"
+sleep 1
 check "env var beats the config file" "$(cat "$MOCK_LOG")" "key=env-key"
+
+# OSSPREY_BIN from the config file is honoured by the guard's rewrite.
+XDGB="$WORK/xdg-bin"
+mkdir -p "$XDGB/ossprey"
+printf 'OSSPREY_BIN=%s\n' "$MOCK" > "$XDGB/ossprey/env"
+OUT=$(printf '{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm ci"}}' \
+  | (unset OSSPREY_BIN; XDG_CONFIG_HOME="$XDGB" sh "$GUARD"))
+check "OSSPREY_BIN from the config file is used in the rewrite" "$OUT" "$MOCK npm ci"
 
 echo "== manifests =="
 
