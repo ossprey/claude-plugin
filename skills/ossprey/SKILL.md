@@ -70,9 +70,9 @@ ossprey scan .          # catalogues manifests/lockfiles, submits, verdict
 ossprey scan . -o sbom.json   # also write the OSSBOM
 ```
 
-Covers Python (requirements.txt, poetry.lock, uv.lock, pyproject.toml, ...)
-and JavaScript (package.json, package-lock.json, yarn.lock, pnpm-lock.yaml).
-Use a lockfile for full transitive coverage.
+Covers Python (requirements.txt, poetry.lock, uv.lock, pyproject.toml, ...),
+JavaScript (package.json, package-lock.json, yarn.lock, pnpm-lock.yaml) and
+Rust (Cargo.toml, Cargo.lock). Use a lockfile for full transitive coverage.
 
 ## Interpreting results
 

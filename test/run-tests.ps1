@@ -329,6 +329,29 @@ Check 'stop feedback lists the finding' $out 'contains malware'
 $out = Invoke-Hook -Event 'report' -Payload $stopA
 Check 'findings not repeated once reported' $out 'exit=0'
 
+foreach ($name in @('Cargo.toml', 'Cargo.lock')) {
+    Reset-Log
+    $out = Invoke-Hook -Event 'audit' -Mode 'safe' -Payload (New-Payload @{
+        session_id = 'sess-rust'
+        hook_event_name = 'PostToolUse'
+        tool_name = 'Edit'
+        tool_input = @{ file_path = (Join-Path $proj $name) }
+    })
+    Wait-ForLog 'scan' | Out-Null
+    Check "$name edit triggers a scan" (Get-Log) 'scan'
+}
+
+# Guards against widening the match to any .toml file.
+Reset-Log
+$out = Invoke-Hook -Event 'audit' -Mode 'safe' -Payload (New-Payload @{
+    session_id = 'sess-rust'
+    hook_event_name = 'PostToolUse'
+    tool_name = 'Edit'
+    tool_input = @{ file_path = (Join-Path $proj 'rust-toolchain.toml') }
+})
+Start-Sleep -Seconds 1
+Check-Absent 'a non-manifest .toml edit does not scan' (Get-Log) 'scan'
+
 Reset-Log
 $out = Invoke-Hook -Event 'audit' -Mode 'malware' -Payload (New-Payload @{
     session_id = 'sess-b'

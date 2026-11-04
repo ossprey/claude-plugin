@@ -11,7 +11,7 @@
     {
       "name": "ossprey",
       "source": "./",
-      "description": "Supply-chain malware protection: blocks installs of known-malicious npm/PyPI packages and audits dependency manifests after edits.",
+      "description": "Supply-chain malware protection: blocks installs of known-malicious npm/PyPI packages and audits npm, PyPI and Rust (Cargo) dependency manifests after edits.",
       "category": "security",
       "tags": [
         "security",
