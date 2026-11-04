@@ -100,6 +100,8 @@ MANIFEST_FILES = {
     "Pipfile",
     "Pipfile.lock",
     "setup.py",
+    "Cargo.toml",
+    "Cargo.lock",
 }
 
 PLUGIN_ROOT = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(

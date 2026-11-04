@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Rust manifests are audited.** Editing `Cargo.toml` or `Cargo.lock` now
+  starts the same background `ossprey scan` of that directory as editing
+  `package.json` or `pyproject.toml`, so a crate the agent adds is scanned
+  before the session ends.
 - **The guard hook routes commands through the CLI instead of adjudicating
   them.** `ossprey npm install left-pad` already checks the named packages —
   and, for an install that names none, scans the project manifest — inside

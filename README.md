@@ -14,7 +14,7 @@ fail-open design, wired to Claude Code's hook events and plugin format.
 | Component | Behaviour |
 |-----------|-----------|
 | `PreToolUse` hook (Bash) | Rewrites package-manager commands to run through the Ossprey CLI's forwarder — `npm install left-pad` becomes `ossprey npm install left-pad` — which checks the packages, or scans the project manifest for an install that names none, and refuses to run the real manager on a malware verdict. See [How the check happens](#how-the-check-happens). |
-| `PostToolUse` hook (edits) | When the agent edits a dependency manifest or lockfile (`package.json`, `requirements.txt`, `pyproject.toml`, `poetry.lock`, `uv.lock`, …) it kicks off a background `ossprey scan` of that directory. |
+| `PostToolUse` hook (edits) | When the agent edits a dependency manifest or lockfile (`package.json`, `requirements.txt`, `pyproject.toml`, `poetry.lock`, `uv.lock`, `Cargo.toml`, `Cargo.lock`, …) it kicks off a background `ossprey scan` of that directory. |
 | `Stop` hook | If a background scan found malware, the stop is blocked and the agent is told to remediate before the session ends. |
 | `SessionStart` hook | Injects `rules/ossprey.md` as session context: prefer `ossprey <manager> install …` wrapped installs, run `ossprey scan .` after dependency changes, never bypass a malware block. |
 | Skill | `ossprey-malware-scan` — on-demand reference for scanning workflows and interpreting results. |

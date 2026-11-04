@@ -247,6 +247,21 @@ check "stop feedback lists the finding" "$OUT" "contains malware"
 OUT=$(run_report sess-a)
 check "findings not repeated once reported" "$OUT" "exit=0"
 
+for F in Cargo.toml Cargo.lock; do
+  reset
+  PAYLOAD=$(printf '{"session_id":"sess-rust","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"%s/proj/%s"}}' "$WORK" "$F")
+  echo "$PAYLOAD" | MOCK_MODE=safe sh "$AUDIT"
+  sleep 1
+  check "$F edit triggers a scan" "$(cat "$MOCK_LOG")" "scan $WORK/proj"
+done
+
+# Guards against widening the match to any .toml file.
+reset
+PAYLOAD=$(printf '{"session_id":"sess-rust","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"%s/proj/rust-toolchain.toml"}}' "$WORK")
+echo "$PAYLOAD" | MOCK_MODE=safe sh "$AUDIT"
+sleep 1
+check_absent "a non-manifest .toml edit does not scan" "$(cat "$MOCK_LOG")" "scan"
+
 reset
 echo '{"session_id":"sess-b","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/proj/src/main.py"}}' \
   | MOCK_MODE=malware sh "$AUDIT"
